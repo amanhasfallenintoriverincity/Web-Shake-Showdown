@@ -81,7 +81,7 @@ const ObstaclesManager = ({
     // Move obstacles and check collisions. State is driven from a ref instead of a
     // setState updater so this stays free of side effects: under StrictMode the
     // updater runs twice, which previously double-counted every hit.
-    const hitPlayerIds = [];
+    const hitEvents = [];
     const missedPlayerIds = [];
     const pArray = Object.values(players);
     next = next.map(obs => {
@@ -105,7 +105,10 @@ const ObstaclesManager = ({
             obstacle: updatedObs,
           })) {
             updatedObs.hit = true;
-            hitPlayerIds.push(p.id);
+            hitEvents.push({
+              playerId: p.id,
+              soundProfile: updatedObs.soundProfile,
+            });
             hitEffects.current?.spawn({
               x: updatedObs.x,
               y: updatedObs.y,
@@ -130,7 +133,7 @@ const ObstaclesManager = ({
     setObstacles(next);
 
     if (onHit) {
-      for (const id of hitPlayerIds) onHit(id);
+      for (const hit of hitEvents) onHit(hit.playerId, hit.soundProfile);
     }
     if (onMiss) {
       for (const id of missedPlayerIds) onMiss(id);
@@ -214,7 +217,7 @@ const GameScene = ({ players, playerOrientations, onHit, onMiss, beatmap, paused
           {beatmap.title} · {section.name} · {section.level}단계
         </div>
         <div style={{ marginTop: '0.3rem', fontSize: '0.72rem', color: '#fff', opacity: 0.76 }}>
-          {beatmap.artist} · {formatSongTime(songTime, beatmap.duration)} / {formatSongTime(beatmap.duration, beatmap.duration)} · {Math.round(beatmap.bpm)} BPM · {beatmap.analysisSource}
+          {beatmap.artist} · {formatSongTime(songTime, beatmap.duration)} / {formatSongTime(beatmap.duration, beatmap.duration)} · {Math.round(beatmap.bpm)} BPM
         </div>
         {section.isRush && (
           <div style={{ marginTop: '0.2rem', fontSize: '2rem', color: '#ffdd00' }}>

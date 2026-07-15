@@ -5,26 +5,10 @@ const BLADE_LENGTH = 5;
 const OBSTACLE_HALF_SIZE = 0.5;
 const BLADE_PADDING = 0.08;
 
-export const INITIAL_LIVES = 3;
 export const GAME_RESULT_DURATION_MS = 5_000;
 
-export function createPlayerLives(playerIds, livesPerPlayer = INITIAL_LIVES) {
-  return Object.fromEntries(playerIds.map(playerId => [playerId, livesPerPlayer]));
-}
-
-export function loseLife(lives, playerId) {
-  return {
-    ...lives,
-    [playerId]: Math.max(0, (lives[playerId] ?? INITIAL_LIVES) - 1),
-  };
-}
-
-export function isPlayerOutOfLives(lives, playerId) {
-  return (lives[playerId] ?? INITIAL_LIVES) <= 0;
-}
-
-export function getGameStateAfterMiss(lives, playerId) {
-  return isPlayerOutOfLives(lives, playerId) ? 'finished' : 'playing';
+export function getGameStateAfterMiss() {
+  return 'playing';
 }
 
 export function incrementScore(scores, playerId, points = 10) {

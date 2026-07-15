@@ -2,13 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GAME_RESULT_DURATION_MS,
-  INITIAL_LIVES,
-  createPlayerLives,
   getGameStateAfterMiss,
   getSwordEuler,
   incrementScore,
-  isPlayerOutOfLives,
-  loseLife,
   swordHitsObstacle,
 } from '../src/gameLogic.js';
 
@@ -40,29 +36,11 @@ test('incrementing a score does not mutate game player state', () => {
   assert.deepEqual(scores, { player1: 10 });
 });
 
-test('each player starts with three independent lives', () => {
-  assert.equal(INITIAL_LIVES, 3);
-  assert.deepEqual(createPlayerLives(['player1', 'player2']), {
-    player1: 3,
-    player2: 3,
-  });
+test('missing notes never ends the game', () => {
+  assert.equal(getGameStateAfterMiss(), 'playing');
 });
 
-test('missing an obstacle removes one life without mutating or going below zero', () => {
-  const lives = { player1: 1, player2: 3 };
-  const afterMiss = loseLife(lives, 'player1');
-  const afterAnotherMiss = loseLife(afterMiss, 'player1');
-
-  assert.deepEqual(lives, { player1: 1, player2: 3 });
-  assert.deepEqual(afterMiss, { player1: 0, player2: 3 });
-  assert.deepEqual(afterAnotherMiss, { player1: 0, player2: 3 });
-  assert.equal(isPlayerOutOfLives(afterAnotherMiss, 'player1'), true);
-  assert.equal(isPlayerOutOfLives(afterAnotherMiss, 'player2'), false);
-});
-
-test('losing the final life enters a five-second result screen before the QR lobby', () => {
-  assert.equal(getGameStateAfterMiss({ player1: 2 }, 'player1'), 'playing');
-  assert.equal(getGameStateAfterMiss({ player1: 0 }, 'player1'), 'finished');
+test('song completion keeps the five-second result screen', () => {
   assert.equal(GAME_RESULT_DURATION_MS, 5_000);
 });
 

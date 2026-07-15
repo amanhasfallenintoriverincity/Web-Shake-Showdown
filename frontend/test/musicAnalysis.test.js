@@ -5,6 +5,7 @@ import {
   buildBeatmapFromAnalysis,
   calculateBeatEnergies,
   extractRhythmWithEssentia,
+  extractSoundProfilesWithEssentia,
   isPlayableBeatmap,
   resamplePcmLinear,
 } from '../src/musicAnalysisCore.js';
@@ -51,6 +52,48 @@ test('louder passages produce denser notes and accented hits', () => {
   assert.ok(loudNotes.length > quietNotes.length);
   assert.ok(loudNotes.some(note => note.accent));
   assert.equal(quietNotes.some(note => note.accent), false);
+});
+
+test('analyzed notes carry music-matched sound profiles for their source beats', () => {
+  const beatmap = buildBeatmapFromAnalysis({
+    bpm: 120,
+    duration: 8,
+    beats: [3, 4, 5, 6],
+    energy: [0.1, 1, 0.5, 0.8],
+    spectralProfiles: [
+      { lowRatio: 0.2, midRatio: 0.7, highRatio: 0.1, brightness: 0.7 },
+      { lowRatio: 0.8, midRatio: 0.18, highRatio: 0.02, brightness: 0.2 },
+      { lowRatio: 0.4, midRatio: 0.5, highRatio: 0.1, brightness: 0.5 },
+      { lowRatio: 0.6, midRatio: 0.35, highRatio: 0.05, brightness: 0.35 },
+    ],
+    keyAnalysis: { key: 'Ab', scale: 'minor', strength: 0.75 },
+  });
+  const bassHeavyNote = beatmap.notes.find(note => note.time === 4);
+
+  assert.deepEqual(
+    {
+      lowRatio: bassHeavyNote.soundProfile.lowRatio,
+      midRatio: bassHeavyNote.soundProfile.midRatio,
+      highRatio: bassHeavyNote.soundProfile.highRatio,
+      brightness: bassHeavyNote.soundProfile.brightness,
+      intensity: bassHeavyNote.soundProfile.intensity,
+      key: bassHeavyNote.soundProfile.key,
+      scale: bassHeavyNote.soundProfile.scale,
+      beatDuration: bassHeavyNote.soundProfile.beatDuration,
+    },
+    {
+      lowRatio: 0.8,
+      midRatio: 0.18,
+      highRatio: 0.02,
+      brightness: 0.2,
+      intensity: 1,
+      key: 'Ab',
+      scale: 'minor',
+      beatDuration: 0.5,
+    }
+  );
+  assert.ok(bassHeavyNote.soundProfile.rootFrequency > 50);
+  assert.ok(bassHeavyNote.soundProfile.rootFrequency < 53);
 });
 
 test('energy-derived sections cover the song and mark the loudest passage as a rush', () => {
@@ -115,6 +158,56 @@ test('non-44.1 kHz PCM is resampled before Essentia rhythm extraction and native
   assert.equal(analysis.bpm, 120);
   assert.deepEqual(calls[0], ['vector', [0, 2]]);
   assert.deepEqual(calls[1], ['rhythm', inputVector, 208, 'multifeature', 40]);
+  assert.ok(vectors.every(item => item.deleted === 1));
+});
+
+test('Essentia extracts song key and a different spectral sound profile for each beat', () => {
+  const vectors = [];
+  const vector = label => {
+    const instance = {
+      label,
+      deleted: 0,
+      delete() { this.deleted += 1; },
+    };
+    vectors.push(instance);
+    return instance;
+  };
+  let spectrumIndex = 0;
+  const centroids = [3000, 9000];
+  const bandEnergies = [
+    [2, 6, 2],
+    [8, 1, 1],
+  ];
+  const essentia = {
+    arrayToVector(samples) { return vector(`input-${samples.length}`); },
+    KeyExtractor() { return { key: 'Ab', scale: 'minor', strength: 0.75 }; },
+    Windowing() { return { frame: vector(`window-${spectrumIndex}`) }; },
+    SpectralCentroidTime() { return { centroid: centroids[spectrumIndex] }; },
+    Spectrum() {
+      const spectrum = vector(`spectrum-${spectrumIndex}`);
+      spectrum.profileIndex = spectrumIndex;
+      spectrumIndex += 1;
+      return { spectrum };
+    },
+    EnergyBand(spectrum, _sampleRate, startFrequency) {
+      const bandIndex = startFrequency === 20 ? 0 : startFrequency === 200 ? 1 : 2;
+      return { energyBand: bandEnergies[spectrum.profileIndex][bandIndex] };
+    },
+  };
+
+  const analysis = extractSoundProfilesWithEssentia(
+    essentia,
+    new Float32Array(16),
+    44100,
+    [0.00005, 0.0002],
+    4
+  );
+
+  assert.deepEqual(analysis.keyAnalysis, { key: 'Ab', scale: 'minor', strength: 0.75 });
+  assert.deepEqual(analysis.spectralProfiles, [
+    { lowRatio: 0.2, midRatio: 0.6, highRatio: 0.2, brightness: 0.5 },
+    { lowRatio: 0.8, midRatio: 0.1, highRatio: 0.1, brightness: 1 },
+  ]);
   assert.ok(vectors.every(item => item.deleted === 1));
 });
 

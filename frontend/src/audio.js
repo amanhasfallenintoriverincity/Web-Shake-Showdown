@@ -63,35 +63,91 @@ function getMusic(songUrl) {
   return music;
 }
 
-export function playHitSound(context, output = masterGain) {
-  const now = context.currentTime;
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum));
+}
 
-  // High-passed noise: the instantaneous brittle crack.
+function getFragmentFrequencies(soundProfile) {
+  const rootFrequency = Number.isFinite(soundProfile?.rootFrequency)
+    ? clamp(soundProfile.rootFrequency, 36, 82)
+    : null;
+  if (!rootFrequency) return [1650, 2280, 3070, 3980, 5150, 6730];
+
+  const scaleSteps = soundProfile.scale === 'major'
+    ? [0, 4, 7, 11, 12, 16]
+    : [0, 3, 7, 10, 12, 15];
+  const brightness = clamp(soundProfile.brightness, 0, 1);
+  const brightnessMultiplier = 0.82 + brightness * 0.45;
+  return scaleSteps.map(semitones => (
+    rootFrequency * 32 * (2 ** (semitones / 12)) * brightnessMultiplier
+  ));
+}
+
+export function playHitSound(context, output = masterGain, soundProfile = {}) {
+  const now = context.currentTime;
+  const lowRatio = clamp(soundProfile.lowRatio ?? 0.5, 0, 1);
+  const midRatio = clamp(soundProfile.midRatio ?? 0.4, 0, 1);
+  const highRatio = clamp(soundProfile.highRatio ?? 0.1, 0, 1);
+  const brightness = clamp(soundProfile.brightness ?? 0.2, 0, 1);
+  const intensity = clamp(soundProfile.intensity ?? 0.7, 0, 1);
+  const beatDuration = clamp(soundProfile.beatDuration ?? 0.5, 0.25, 1.5);
+  const rootFrequency = Number.isFinite(soundProfile.rootFrequency)
+    ? clamp(soundProfile.rootFrequency, 36, 82)
+    : 46;
+  const maximumKickDuration = clamp(beatDuration * 0.7, 0.18, 0.42);
+  const kickDuration = Math.min(0.18 + lowRatio * 0.18, maximumKickDuration);
+
+  // Bass-heavy beats ring longer and settle on the detected song key.
+  const kick = context.createOscillator();
+  kick.type = 'sine';
+  kick.frequency.setValueAtTime(
+    clamp(rootFrequency * (3.2 + brightness * 0.8), 110, 190),
+    now
+  );
+  kick.frequency.exponentialRampToValueAtTime(
+    rootFrequency,
+    now + Math.min(0.16, kickDuration * 0.7)
+  );
+  const kickGain = context.createGain();
+  kickGain.gain.setValueAtTime(clamp(0.42 + intensity * 0.26 + lowRatio * 0.2, 0.4, 0.9), now);
+  kickGain.gain.exponentialRampToValueAtTime(0.001, now + kickDuration);
+  kick.connect(kickGain).connect(output);
+  kick.start(now);
+  kick.stop(now + kickDuration + 0.02);
+
+  // Bright/high-heavy beats produce a sharper, more prominent transient.
   const noise = context.createBufferSource();
   noise.buffer = getGlassNoiseBuffer(context);
   const noiseFilter = context.createBiquadFilter();
   noiseFilter.type = 'highpass';
-  noiseFilter.frequency.value = 2100;
+  noiseFilter.frequency.value = clamp(1200 + brightness * 5000 + highRatio * 1800, 1200, 8200);
   noiseFilter.Q.value = 0.8;
   const noiseGain = context.createGain();
-  noiseGain.gain.setValueAtTime(0.5, now);
-  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+  const crackDuration = clamp(0.14 + midRatio * 0.1 + highRatio * 0.08, 0.14, 0.3);
+  noiseGain.gain.setValueAtTime(
+    clamp(0.2 + intensity * 0.2 + highRatio * 0.28, 0.2, 0.68),
+    now
+  );
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, now + crackDuration);
   noise.connect(noiseFilter).connect(noiseGain).connect(output);
   noise.start(now);
-  noise.stop(now + 0.3);
+  noise.stop(now + crackDuration + 0.02);
 
-  // Inharmonic high partials ring at different lengths like scattered glass pieces.
-  const fragmentFrequencies = [1650, 2280, 3070, 3980, 5150, 6730];
+  // Tonal fragments follow the detected key while spectral balance controls their color.
+  const fragmentFrequencies = getFragmentFrequencies(soundProfile);
   fragmentFrequencies.forEach((baseFrequency, index) => {
     const fragment = context.createOscillator();
     fragment.type = index % 2 === 0 ? 'sine' : 'triangle';
-    const frequency = baseFrequency * (0.97 + Math.random() * 0.06);
-    const duration = 0.12 + index * 0.035;
+    const frequency = baseFrequency;
+    const duration = 0.1 + index * 0.028 + midRatio * 0.08;
     fragment.frequency.setValueAtTime(frequency, now);
     fragment.frequency.exponentialRampToValueAtTime(frequency * 0.82, now + duration);
 
     const fragmentGain = context.createGain();
-    fragmentGain.gain.setValueAtTime(0.2 / (1 + index * 0.14), now);
+    fragmentGain.gain.setValueAtTime(
+      (0.09 + highRatio * 0.12 + midRatio * 0.04) * intensity / (1 + index * 0.14),
+      now
+    );
     fragmentGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     fragment.connect(fragmentGain).connect(output);
@@ -143,7 +199,7 @@ export function getMusicTime() {
 }
 
 /** Play the glass-shatter hit effect. Safe to call before explicit initialization. */
-export function playHit() {
+export function playHit(soundProfile) {
   if (!started) initAudio();
-  playHitSound(ctx());
+  playHitSound(ctx(), masterGain, soundProfile);
 }

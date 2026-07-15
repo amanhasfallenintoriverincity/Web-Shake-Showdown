@@ -1,6 +1,6 @@
 import { isPlayableBeatmap } from './musicAnalysisCore.js';
 
-const CACHE_PREFIX = 'web-shake-showdown:essentia-analysis:v2';
+const CACHE_PREFIX = 'web-shake-showdown:essentia-analysis:v3';
 
 function createAbortError() {
   const error = new Error('음악 분석이 취소되었습니다.');

@@ -4,6 +4,7 @@ import {
   buildBeatmapFromAnalysis,
   calculateBeatEnergies,
   extractRhythmWithEssentia,
+  extractSoundProfilesWithEssentia,
   isPlayableBeatmap,
 } from './musicAnalysisCore.js';
 
@@ -34,10 +35,17 @@ self.onmessage = async ({ data }) => {
     }
 
     const energy = calculateBeatEnergies(samples, data.sampleRate, rhythm.beats);
+    const soundAnalysis = extractSoundProfilesWithEssentia(
+      essentia,
+      samples,
+      data.sampleRate,
+      rhythm.beats
+    );
     const beatmap = buildBeatmapFromAnalysis({
       ...rhythm,
       duration: data.duration,
       energy,
+      ...soundAnalysis,
     });
     if (!isPlayableBeatmap(beatmap)) {
       throw new Error('분석 결과로 플레이 가능한 맵을 만들지 못했습니다.');

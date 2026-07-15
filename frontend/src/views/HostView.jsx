@@ -4,6 +4,10 @@ import { QRCodeSVG } from 'qrcode.react';
 import GameScene from '../components/GameScene';
 import AlignmentGuide from '../components/AlignmentGuide';
 import { pauseMusic, playHit, resumeMusic, startMusic, stopMusic } from '../audio';
+import {
+  isAutoStartEligible,
+  scheduleAutoStart,
+} from '../autoStart';
 import { analyzeMusicTrack } from '../musicAnalysis';
 import { TOXIC_FALLBACK_BEATMAP } from '../toxicBeatmap';
 import {
@@ -15,11 +19,8 @@ import {
 } from '../calibrationState';
 import {
   GAME_RESULT_DURATION_MS,
-  INITIAL_LIVES,
-  createPlayerLives,
   getGameStateAfterMiss,
   incrementScore,
-  loseLife,
 } from '../gameLogic';
 
 // Use relative path to leverage Vite's proxy
@@ -36,7 +37,6 @@ const HostView = () => {
   const [roomId, setRoomId] = useState(null);
   const [players, setPlayers] = useState({});
   const [scores, setScores] = useState({});
-  const [lives, setLives] = useState({});
   const [playerCalibration, setPlayerCalibrationState] = useState({});
   const [gameState, setGameState] = useState('waiting'); // waiting, playing, finished
   const [finalResults, setFinalResults] = useState([]);
@@ -50,10 +50,10 @@ const HostView = () => {
   const [resultSecondsLeft, setResultSecondsLeft] = useState(
     () => Math.ceil(GAME_RESULT_DURATION_MS / 1000)
   );
+  const [autoStartSecondsLeft, setAutoStartSecondsLeft] = useState(null);
   const [debugData, setDebugData] = useState({});
   const socketRef = useRef(null);
   const roomIdRef = useRef(null);
-  const livesRef = useRef({});
   const scoresRef = useRef({});
   const replacingRoomRef = useRef(false);
   const finishGameRef = useRef(() => {});
@@ -152,11 +152,6 @@ const HostView = () => {
         scoresRef.current = next;
         return next;
       });
-      setLives(prev => {
-        const next = { ...prev, [playerId]: INITIAL_LIVES };
-        livesRef.current = next;
-        return next;
-      });
       // Initialize orientation in ref
       playerOrientations.current[playerId] = { alpha: 0, beta: 0, gamma: 0 };
       setPlayerCalibrationState(prev => (
@@ -174,12 +169,6 @@ const HostView = () => {
         const next = { ...prev };
         delete next[playerId];
         scoresRef.current = next;
-        return next;
-      });
-      setLives(prev => {
-        const next = { ...prev };
-        delete next[playerId];
-        livesRef.current = next;
         return next;
       });
       delete playerOrientations.current[playerId];
@@ -232,13 +221,11 @@ const HostView = () => {
     const replaceRoom = window.setTimeout(() => {
       const finishedRoomId = roomIdRef.current;
       roomIdRef.current = null;
-      livesRef.current = {};
       scoresRef.current = {};
       playerOrientations.current = {};
       setRoomId(null);
       setPlayers({});
       setScores({});
-      setLives({});
       setPlayerCalibrationState({});
       setDebugData({});
       setFinalResults([]);
@@ -322,15 +309,12 @@ const HostView = () => {
   }, [players]);
   finishGameRef.current = finishGame;
 
-  const startGame = () => {
+  const startGame = useCallback(() => {
     if (!calibrationSummary.allReady || !analysisReady) return;
     const playerIds = Object.keys(players);
-    const resetLives = createPlayerLives(playerIds);
     const resetScores = Object.fromEntries(playerIds.map(playerId => [playerId, 0]));
     replacingRoomRef.current = false;
-    livesRef.current = resetLives;
     scoresRef.current = resetScores;
-    setLives(resetLives);
     setScores(resetScores);
     setFinalResults([]);
     setAudioError(null);
@@ -342,10 +326,30 @@ const HostView = () => {
       setGameState('waiting');
     });
     setGameState('playing');
-  };
+  }, [analysisReady, beatmap.songUrl, calibrationSummary.allReady, players]);
 
-  const handleHit = useCallback((playerId) => {
-    playHit();
+  const autoStartEligible = isAutoStartEligible({
+    gameState,
+    totalPlayers: calibrationSummary.total,
+    allPlayersReady: calibrationSummary.allReady,
+    analysisReady,
+    blocked: Boolean(audioError),
+  });
+
+  useEffect(() => {
+    if (!autoStartEligible) {
+      setAutoStartSecondsLeft(null);
+      return undefined;
+    }
+
+    return scheduleAutoStart({
+      onTick: setAutoStartSecondsLeft,
+      onStart: startGame,
+    });
+  }, [autoStartEligible, startGame]);
+
+  const handleHit = useCallback((playerId, soundProfile) => {
+    playHit(soundProfile);
     socketRef.current?.emit('player_hit', {
       roomId: roomIdRef.current,
       playerId,
@@ -357,18 +361,9 @@ const HostView = () => {
     startTransition(() => setScores(nextScores));
   }, []);
 
-  const handleMiss = useCallback((playerId) => {
-    if (!(playerId in livesRef.current)) return;
-    const nextLives = loseLife(livesRef.current, playerId);
-    livesRef.current = nextLives;
-    setLives(nextLives);
-    const nextGameState = getGameStateAfterMiss(nextLives, playerId);
-    if (nextGameState === 'finished') {
-      finishGame();
-      return;
-    }
-    setGameState(nextGameState);
-  }, [finishGame]);
+  const handleMiss = useCallback(() => {
+    setGameState(getGameStateAfterMiss());
+  }, []);
 
   const joinUrl = `${window.location.protocol}//${window.location.host}/join?roomId=${roomId}`;
 
@@ -447,18 +442,20 @@ const HostView = () => {
 
               <button
                 className="btn"
-                onClick={startGame}
-                disabled={!calibrationSummary.allReady || !analysisReady}
+                onClick={audioError ? startGame : undefined}
+                disabled={!audioError || !calibrationSummary.allReady || !analysisReady}
                 style={{ opacity: calibrationSummary.allReady && analysisReady ? 1 : 0.5 }}
               >
-                {!analysisReady
+                {audioError
+                  ? '오디오 권한 허용하고 게임 시작'
+                  : !analysisReady
                   ? analysisState.phase === 'error'
                     ? '다른 음악 파일을 선택해 주세요'
                     : '음악 자동 분석 중'
                   : calibrationSummary.total === 0
                   ? '휴대폰 연결 대기 중'
                   : calibrationSummary.allReady
-                    ? '게임 시작'
+                    ? `${autoStartSecondsLeft ?? 5}초 후 자동 시작`
                     : '휴대폰 위치 맞추는 중'}
               </button>
             </>
@@ -519,25 +516,6 @@ const HostView = () => {
                 <div key={p.id} style={{ display: 'flex', flexDirection: 'column' }}>
                   <div className="score-display" style={{ color: p.color }}>
                     {Object.keys(players).indexOf(p.id) + 1}번: {scores[p.id] ?? 0}점
-                  </div>
-                  <div
-                    aria-label={`남은 기회 ${lives[p.id] ?? INITIAL_LIVES}개`}
-                    style={{
-                      color: '#ff2d55',
-                      fontSize: '2rem',
-                      letterSpacing: '0.22rem',
-                      lineHeight: 1,
-                      textShadow: '0 0 12px #ff0055',
-                    }}
-                  >
-                    {Array.from({ length: INITIAL_LIVES }, (_, index) => (
-                      <span
-                        key={index}
-                        style={{ opacity: index < (lives[p.id] ?? INITIAL_LIVES) ? 1 : 0.18 }}
-                      >
-                        ♥
-                      </span>
-                    ))}
                   </div>
                   {debugData[p.id] && (
                     <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', background: 'rgba(0,0,0,0.5)', padding: '5px', borderRadius: '5px' }}>
