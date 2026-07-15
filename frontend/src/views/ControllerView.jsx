@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
-import { Smartphone } from 'lucide-react';
-import AlignmentGuide from '../components/AlignmentGuide';
+import { RotateCcw, Smartphone } from 'lucide-react';
+import SwordAlignmentGuide from '../components/SwordAlignmentGuide';
 import { createOrientationPublisher } from '../orientationTransport';
 import { createScreenWakeLock } from '../screenWakeLock';
 import { vibrateOnHit } from '../hitHaptics';
@@ -14,12 +14,12 @@ const ControllerView = () => {
   const roomIdFromUrl = searchParams.get('roomId');
 
   const [roomId, setRoomId] = useState(roomIdFromUrl || '');
-  const [status, setStatus] = useState('disconnected'); // disconnected, connecting, connected, error
-  const [alignmentStage, setAlignmentStage] = useState('idle'); // idle, aligning, ready
-  const [orientation, setOrientation] = useState({ alpha: 0, beta: 0, gamma: 0 });
+  const [status, setStatus] = useState('disconnected');
+  const [alignmentStage, setAlignmentStage] = useState('idle');
+  const [orientation, setOrientation] = useState({ alpha: null, beta: null, gamma: null });
   const [color, setColor] = useState('#fff');
   const [errorMsg, setErrorMsg] = useState('');
-  const [eventCount, setEventCount] = useState(0); // Debug counter
+  const [eventCount, setEventCount] = useState(0);
 
   const roomIdRef = useRef(roomId);
   const socketRef = useRef(null);
@@ -39,29 +39,24 @@ const ControllerView = () => {
 
   const handleOrientation = React.useCallback((event) => {
     rawOrientationRef.current = {
-      alpha: event.alpha || 0,
-      beta: event.beta || 0,
-      gamma: event.gamma || 0
+      alpha: event.alpha ?? 0,
+      beta: event.beta ?? 0,
+      gamma: event.gamma ?? 0,
     };
 
-    // Calculate calibrated data
-    // We ONLY offset alpha (heading) so the phone faces the screen.
-    // We leave beta (pitch) and gamma (roll) absolute, so beta=90 always means pointing UP.
-    // alpha is a circular 0-360 value; subtracting the offset can produce values
-    // outside that range, so wrap the result back into -180..180 to avoid a small
-    // heading change near the 0/360 seam reading as a huge angle.
+    // Heading is relative to the direction saved during calibration. Pitch and roll
+    // stay absolute so an upright phone continues to mean beta=90 and gamma=0.
     const relativeAlpha =
       ((rawOrientationRef.current.alpha - offsetRef.current.alpha) % 360 + 540) % 360 - 180;
     const data = {
       alpha: relativeAlpha,
       beta: rawOrientationRef.current.beta,
-      gamma: rawOrientationRef.current.gamma
+      gamma: rawOrientationRef.current.gamma,
     };
 
     eventCountRef.current += 1;
 
-    // Keep diagnostic React renders infrequent. Sensor input still travels at up
-    // to 60fps below, without making the controller UI compete for the main thread.
+    // Keep diagnostics and the guide smooth without rendering React at sensor frequency.
     const now = performance.now();
     if (now - lastUiUpdateTime.current >= 100) {
       lastUiUpdateTime.current = now;
@@ -69,7 +64,6 @@ const ControllerView = () => {
       setEventCount(eventCountRef.current);
     }
 
-    // Volatile transport drops stale frames instead of letting old movement queue up.
     publishOrientationRef.current(socketRef.current, roomIdRef.current, data);
   }, []);
 
@@ -85,44 +79,12 @@ const ControllerView = () => {
   };
 
   useEffect(() => {
-    // Cleanup on unmount
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
+      socketRef.current?.disconnect();
       void wakeLockRef.current?.stop();
       window.removeEventListener('deviceorientation', handleOrientation);
     };
   }, [handleOrientation]);
-
-  const connectAndRequestPermission = async () => {
-    // Must begin from this tap on iOS. The lock is reacquired automatically when
-    // the page becomes visible again after an app switch.
-    void wakeLockRef.current.start();
-
-    // iOS 13+ requires explicit permission for DeviceOrientation
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      try {
-        const permissionState = await DeviceOrientationEvent.requestPermission();
-        if (permissionState === 'granted') {
-          // Remove first so a repeated tap can't stack duplicate listeners.
-          window.removeEventListener('deviceorientation', handleOrientation);
-          window.addEventListener('deviceorientation', handleOrientation);
-          connectToServer();
-        } else {
-          setErrorMsg('동작 센서 권한이 필요합니다. 권한을 허용해주세요.');
-        }
-      } catch (err) {
-        console.error(err);
-        setErrorMsg('동작 센서를 사용할 수 없습니다. 보안 연결로 다시 접속해주세요.');
-      }
-    } else {
-      // Non iOS 13+ devices
-      window.removeEventListener('deviceorientation', handleOrientation);
-      window.addEventListener('deviceorientation', handleOrientation);
-      connectToServer();
-    }
-  };
 
   const connectToServer = () => {
     if (!roomId) {
@@ -131,10 +93,8 @@ const ControllerView = () => {
     }
 
     setStatus('connecting');
-    // Tear down any previous socket so reconnects don't leave orphaned connections.
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-    }
+    setErrorMsg('');
+    socketRef.current?.disconnect();
     socketRef.current = io(BACKEND_URL, { transports: ['websocket'] });
     const socket = socketRef.current;
 
@@ -155,6 +115,7 @@ const ControllerView = () => {
 
     socket.on('room_error', (msg) => {
       setStatus('error');
+      setAlignmentStage('idle');
       setErrorMsg(msg);
       void wakeLockRef.current.stop();
       socket.disconnect();
@@ -173,92 +134,98 @@ const ControllerView = () => {
 
     socket.on('host_disconnected', () => {
       setStatus('disconnected');
-      setErrorMsg('컴퓨터 연결이 끊어져 게임이 종료되었습니다.');
+      setAlignmentStage('idle');
+      setErrorMsg('호스트 연결이 끊어졌습니다. 게임 화면을 확인해주세요.');
       void wakeLockRef.current.stop();
       socket.disconnect();
     });
   };
 
+  const connectAndRequestPermission = async () => {
+    void wakeLockRef.current.start();
+
+    if (
+      typeof DeviceOrientationEvent !== 'undefined'
+      && typeof DeviceOrientationEvent.requestPermission === 'function'
+    ) {
+      try {
+        const permissionState = await DeviceOrientationEvent.requestPermission();
+        if (permissionState === 'granted') {
+          window.removeEventListener('deviceorientation', handleOrientation);
+          window.addEventListener('deviceorientation', handleOrientation);
+          connectToServer();
+        } else {
+          setErrorMsg('동작 센서 권한이 필요합니다. 브라우저 설정에서 허용해주세요.');
+        }
+      } catch (error) {
+        console.error(error);
+        setErrorMsg('센서 권한을 열 수 없습니다. HTTPS 주소인지 확인해주세요.');
+      }
+    } else {
+      window.removeEventListener('deviceorientation', handleOrientation);
+      window.addEventListener('deviceorientation', handleOrientation);
+      connectToServer();
+    }
+  };
+
+  const showJoinPanel = status === 'disconnected' || status === 'error' || status === 'connecting';
+
   return (
-    <div className="controller-ui" style={{ backgroundColor: status === 'connected' ? color : 'var(--bg-color)' }}>
-      {status !== 'connected' ? (
-        <div className="glass-panel" style={{ width: '90%', maxWidth: '400px' }}>
-          <Smartphone size={64} color="var(--primary)" />
-          <h2 className="title" style={{ fontSize: '2rem' }}>휴대폰 컨트롤러</h2>
+    <div
+      className={`controller-ui ${alignmentStage === 'ready' ? 'is-playing' : ''}`}
+      style={{ '--player-color': color }}
+    >
+      {showJoinPanel ? (
+        <div className="controller-connect-panel">
+          <div className="connect-icon"><Smartphone size={42} /></div>
+          <span className="alignment-kicker">WEB SHAKE SHOWDOWN</span>
+          <h1>휴대폰을<br />검으로 연결</h1>
+          <p>게임 화면에 표시된 방 코드를 입력하세요.</p>
 
           <input
-            type="text"
             aria-label="방 코드"
-            placeholder="방 코드"
+            type="text"
+            placeholder="ROOM CODE"
             value={roomId}
-            onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-            style={{
-              padding: '1rem',
-              fontSize: '1.5rem',
-              textAlign: 'center',
-              borderRadius: '10px',
-              border: 'none',
-              width: '100%',
-              textTransform: 'uppercase'
-            }}
+            onChange={(event) => setRoomId(event.target.value.toUpperCase())}
           />
 
-          {errorMsg && <p style={{ color: '#ff5a78', textAlign: 'center' }}>{errorMsg}</p>}
+          {errorMsg && <p className="controller-error">{errorMsg}</p>}
 
           <button
-            className="btn"
-            onClick={connectAndRequestPermission}
+            className="controller-connect-button"
             disabled={status === 'connecting'}
-            style={{ width: '100%', opacity: status === 'connecting' ? 0.55 : 1 }}
+            onClick={connectAndRequestPermission}
+            type="button"
           >
-            {status === 'connecting' ? '연결하는 중...' : '연결하고 시작하기'}
+            {status === 'connecting' ? '연결 중…' : '센서 연결하기'}
           </button>
         </div>
+      ) : alignmentStage === 'aligning' ? (
+        <SwordAlignmentGuide orientation={orientation} onConfirm={completeCalibration} />
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#fff', textShadow: '0 0 10px rgba(0,0,0,0.8)' }}>
-          <h1 style={{ fontFamily: 'Orbitron, sans-serif', fontSize: 'clamp(2.8rem, 15vw, 4rem)', fontWeight: 900, color: '#fff', textShadow: '0 0 20px rgba(255,255,255,0.8)' }}>
-            휘두르세요!
-          </h1>
-          <p style={{ fontSize: '1.5rem', marginTop: '1rem', fontWeight: 700, color: '#fff' }}>
-            연결 완료
-          </p>
+        <section className="controller-play-ready">
+          <span className="play-ready-label">CONTROLLER READY</span>
+          <h1>SWING!</h1>
+          <p>연결 완료 · 휴대폰을 검처럼 휘두르세요</p>
 
-          <div className="sensor-data" style={{ color: 'rgba(255,255,255,0.9)', background: 'rgba(0,0,0,0.52)', padding: '10px 20px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.55)' }}>
-            좌우: {orientation.alpha?.toFixed(1)}°<br/>
-            앞뒤: {orientation.beta?.toFixed(1)}°<br/>
-            기울기: {orientation.gamma?.toFixed(1)}°<br/>
-            <span style={{ fontSize: '0.8rem', opacity: 0.65 }}>센서 감지: {eventCount}회</span>
+          <div className="play-ready-sword" aria-hidden="true">
+            <span className="play-ready-blade" />
+            <span className="play-ready-guard" />
+            <span className="play-ready-grip" />
           </div>
 
-          <button
-            style={{
-              marginTop: '3rem',
-              padding: '1rem 3rem',
-              fontSize: '1.2rem',
-              fontWeight: 800,
-              color: '#000',
-              backgroundColor: '#fff',
-              border: 'none',
-              borderRadius: '12px',
-              boxShadow: '0 0 20px rgba(255,255,255,0.5)',
-              cursor: 'pointer'
-            }}
-            onClick={beginCalibration}
-          >
-            휴대폰 위치 다시 맞추기
-          </button>
-          <p style={{ marginTop: '1rem', fontSize: '0.95rem', fontWeight: 700, opacity: 0.88, textAlign: 'center' }}>
-            위치 맞춤 완료 · 이제 휴대폰을 검처럼 움직이세요
-          </p>
-        </div>
-      )}
+          <div className="sensor-data">
+            <span>α {orientation.alpha?.toFixed(1)}°</span>
+            <span>β {orientation.beta?.toFixed(1)}°</span>
+            <span>γ {orientation.gamma?.toFixed(1)}°</span>
+            <small>{eventCount} sensor events</small>
+          </div>
 
-      {status === 'connected' && alignmentStage === 'aligning' && (
-        <AlignmentGuide
-          mode="controller"
-          color={color}
-          onConfirm={completeCalibration}
-        />
+          <button className="recalibrate-button" type="button" onClick={beginCalibration}>
+            <RotateCcw size={18} /> 다시 정렬
+          </button>
+        </section>
       )}
     </div>
   );
