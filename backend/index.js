@@ -1,19 +1,35 @@
 const express = require('express');
 const http = require('http');
+const path = require('node:path');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const { mountProductionFrontend } = require('./productionFrontend');
 const { createRoom, replaceRoom } = require('./roomManager');
+const { createSocketRequestAuthorizer, parseAllowedOrigins } = require('./socketOrigin');
 
 const app = express();
-app.use(cors());
+mountProductionFrontend(app, {
+  distPath: process.env.FRONTEND_DIST_PATH || path.resolve(__dirname, '../frontend/dist'),
+});
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: '*', // For development, allow all
-    methods: ['GET', 'POST']
-  }
-});
+const configuredSocketOrigins = parseAllowedOrigins(process.env.SOCKET_ALLOWED_ORIGINS);
+const socketServerOptions = {
+  allowRequest: createSocketRequestAuthorizer(),
+};
+
+// Local Vite development uses a permissive WebSocket policy. Production is
+// same-origin by default and only enables cross-origin CORS when explicitly set.
+if (process.env.NODE_ENV !== 'production' || configuredSocketOrigins.length > 0) {
+  socketServerOptions.cors = {
+    origin:
+      process.env.NODE_ENV !== 'production' || configuredSocketOrigins.includes('*')
+        ? '*'
+        : configuredSocketOrigins,
+    methods: ['GET', 'POST'],
+  };
+}
+
+const io = new Server(server, socketServerOptions);
 
 // Store active rooms and players
 const rooms = new Map(); // roomId -> { hostId: string, players: { [socketId]: { color, connected } } }
@@ -130,5 +146,7 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on 0.0.0.0:${PORT}`);
+  const address = server.address();
+  const boundPort = typeof address === 'object' && address ? address.port : PORT;
+  console.log(`Server listening on 0.0.0.0:${boundPort}`);
 });
