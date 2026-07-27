@@ -1,4 +1,4 @@
-import React, { startTransition, useCallback, useEffect, useState, useRef } from 'react';
+import React, { startTransition, useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 import GameScene from '../components/GameScene';
@@ -8,8 +8,8 @@ import {
   isAutoStartEligible,
   scheduleAutoStart,
 } from '../autoStart';
+import { DEFAULT_BEATMAP } from '../defaultBeatmap';
 import { analyzeMusicTrack } from '../musicAnalysis';
-import { TOXIC_FALLBACK_BEATMAP } from '../toxicBeatmap';
 import {
   CALIBRATION_ALIGNING,
   CALIBRATION_READY,
@@ -22,6 +22,7 @@ import {
   getGameStateAfterMiss,
   incrementScore,
 } from '../gameLogic';
+import { fitPanelToViewport } from '../viewportFit';
 
 // Use relative path to leverage Vite's proxy
 const BACKEND_URL = '/';
@@ -40,12 +41,12 @@ const HostView = () => {
   const [playerCalibration, setPlayerCalibrationState] = useState({});
   const [gameState, setGameState] = useState('waiting'); // waiting, playing, finished
   const [finalResults, setFinalResults] = useState([]);
-  const [beatmap, setBeatmap] = useState(TOXIC_FALLBACK_BEATMAP);
+  const [beatmap, setBeatmap] = useState(DEFAULT_BEATMAP);
   const [analysisState, setAnalysisState] = useState({
     phase: 'loading',
     message: '음악 자동 분석을 준비하고 있습니다…',
   });
-  const [selectedTrackName, setSelectedTrackName] = useState(TOXIC_FALLBACK_BEATMAP.title);
+  const [selectedTrackName, setSelectedTrackName] = useState(DEFAULT_BEATMAP.title);
   const [audioError, setAudioError] = useState(null);
   const [resultSecondsLeft, setResultSecondsLeft] = useState(
     () => Math.ceil(GAME_RESULT_DURATION_MS / 1000)
@@ -59,8 +60,32 @@ const HostView = () => {
   const finishGameRef = useRef(() => {});
   const analysisAbortRef = useRef(null);
   const customSongUrlRef = useRef(null);
+  const viewportFitPanelRef = useRef(null);
   // Use a ref for high-frequency orientation data to avoid re-rendering HostView 60 times a second
   const playerOrientations = useRef({});
+
+  useLayoutEffect(() => {
+    const panel = viewportFitPanelRef.current;
+    const viewport = panel?.parentElement;
+    if (!panel || !viewport) return undefined;
+
+    const fitPanel = () => fitPanelToViewport(panel, viewport);
+    fitPanel();
+
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(fitPanel);
+    resizeObserver?.observe(panel);
+    resizeObserver?.observe(viewport);
+    window.addEventListener('resize', fitPanel);
+    window.visualViewport?.addEventListener('resize', fitPanel);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', fitPanel);
+      window.visualViewport?.removeEventListener('resize', fitPanel);
+    };
+  }, [gameState]);
 
   const runMusicAnalysis = useCallback(({
     songUrl,
@@ -99,7 +124,7 @@ const HostView = () => {
       if (error.name === 'AbortError') return;
       console.error('Essentia.js analysis failed:', error);
       if (allowFallback) {
-        setBeatmap(TOXIC_FALLBACK_BEATMAP);
+        setBeatmap(DEFAULT_BEATMAP);
         setAnalysisState({
           phase: 'fallback',
           message: '자동 분석에 실패해 검증된 기본 비트맵을 사용합니다.',
@@ -115,9 +140,9 @@ const HostView = () => {
 
   useEffect(() => {
     void runMusicAnalysis({
-      songUrl: TOXIC_FALLBACK_BEATMAP.songUrl,
-      title: TOXIC_FALLBACK_BEATMAP.title,
-      artist: TOXIC_FALLBACK_BEATMAP.artist,
+      songUrl: DEFAULT_BEATMAP.songUrl,
+      title: DEFAULT_BEATMAP.title,
+      artist: DEFAULT_BEATMAP.artist,
       allowFallback: true,
     });
 
@@ -275,11 +300,11 @@ const HostView = () => {
   const useDefaultMusic = () => {
     stopMusic();
     releaseCustomSongUrl();
-    setSelectedTrackName(TOXIC_FALLBACK_BEATMAP.title);
+    setSelectedTrackName(DEFAULT_BEATMAP.title);
     void runMusicAnalysis({
-      songUrl: TOXIC_FALLBACK_BEATMAP.songUrl,
-      title: TOXIC_FALLBACK_BEATMAP.title,
-      artist: TOXIC_FALLBACK_BEATMAP.artist,
+      songUrl: DEFAULT_BEATMAP.songUrl,
+      title: DEFAULT_BEATMAP.title,
+      artist: DEFAULT_BEATMAP.artist,
       allowFallback: true,
     });
   };
@@ -370,7 +395,7 @@ const HostView = () => {
   return (
     <div className="app-container">
       {gameState === 'waiting' && (
-        <div className="glass-panel">
+        <div ref={viewportFitPanelRef} className="glass-panel">
           <h1 className="title">웹 셰이크 쇼다운</h1>
           <p className="subtitle">휴대폰으로 QR 코드를 스캔하세요</p>
           <div style={{ display: 'grid', gap: '10px', justifyItems: 'center', margin: '18px 0' }}>
@@ -395,7 +420,7 @@ const HostView = () => {
             <span style={{ color: '#fff', opacity: 0.78, fontSize: '0.82rem' }}>
               선택한 음악: {selectedTrackName}
             </span>
-            {selectedTrackName !== TOXIC_FALLBACK_BEATMAP.title && (
+            {selectedTrackName !== DEFAULT_BEATMAP.title && (
               <button type="button" onClick={useDefaultMusic} style={{ padding: '7px 12px' }}>
                 기본 음악으로 돌아가기
               </button>
@@ -466,7 +491,7 @@ const HostView = () => {
       )}
 
       {gameState === 'finished' && (
-        <div className="glass-panel" style={{ minWidth: 'min(520px, 88vw)', textAlign: 'center' }}>
+        <div ref={viewportFitPanelRef} className="glass-panel" style={{ minWidth: 'min(520px, 88vw)', textAlign: 'center' }}>
           <h1 className="title" style={{ color: '#ff2d78', textShadow: '0 0 22px #ff0055' }}>
             게임 종료
           </h1>

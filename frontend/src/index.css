@@ -28,6 +28,7 @@ body {
 .app-container {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -48,6 +49,8 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 2rem;
+  transform: scale(var(--viewport-fit-scale, 1));
+  transform-origin: center;
   z-index: 10;
 }
 
