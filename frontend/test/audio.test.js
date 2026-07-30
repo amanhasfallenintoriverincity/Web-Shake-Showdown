@@ -12,7 +12,13 @@ import {
 
 class AudioNode {
   connect(target) {
+    this.connectedTo = target;
     return target;
+  }
+
+  disconnect() {
+    this.connectedTo = null;
+    this.disconnected = true;
   }
 }
 
@@ -21,6 +27,7 @@ function createAudioHarness() {
   const bufferSources = [];
   const audioElements = [];
   const filters = [];
+  const gains = [];
 
   class FakeAudioContext {
     constructor() {
@@ -38,6 +45,7 @@ function createAudioHarness() {
         linearRampToValueAtTime() {},
         exponentialRampToValueAtTime() {},
       };
+      gains.push(gain);
       return gain;
     }
 
@@ -121,6 +129,7 @@ function createAudioHarness() {
     oscillators,
     bufferSources,
     filters,
+    gains,
   };
 }
 
@@ -136,6 +145,28 @@ test('a hit starts a noise crack and multiple ringing glass fragments', () => {
   assert.equal(oscillators.length >= 6, true);
   assert.equal(oscillators.every(oscillator => oscillator.started), true);
   assert.equal(oscillators.every(oscillator => oscillator.stopped), true);
+});
+
+test('finished hit sounds release every temporary audio node', () => {
+  const {
+    FakeAudioContext,
+    oscillators,
+    bufferSources,
+    filters,
+    gains,
+  } = createAudioHarness();
+  const context = new FakeAudioContext();
+
+  for (let hit = 0; hit < 20; hit += 1) {
+    playHitSound(context, context.destination);
+  }
+
+  const sources = [...oscillators, ...bufferSources];
+  sources.forEach(source => source.onended?.());
+
+  assert.equal(sources.every(source => source.disconnected), true);
+  assert.equal(filters.every(filter => filter.disconnected), true);
+  assert.equal(gains.every(gain => gain.disconnected), true);
 });
 
 test('a sword hit adds a short downward-pitched drum bass thump', () => {

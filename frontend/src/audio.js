@@ -43,6 +43,13 @@ function getGlassNoiseBuffer(context) {
   return glassNoiseBuffer;
 }
 
+function disconnectWhenEnded(source, ...nodes) {
+  source.onended = () => {
+    source.disconnect();
+    nodes.forEach(node => node.disconnect());
+  };
+}
+
 function clearMusicEndedHandler() {
   if (!music || !musicEndedHandler) return;
   music.removeEventListener('ended', musicEndedHandler);
@@ -112,6 +119,7 @@ export function playHitSound(context, output = masterGain, soundProfile = {}) {
   kickGain.gain.setValueAtTime(clamp(0.42 + intensity * 0.26 + lowRatio * 0.2, 0.4, 0.9), now);
   kickGain.gain.exponentialRampToValueAtTime(0.001, now + kickDuration);
   kick.connect(kickGain).connect(output);
+  disconnectWhenEnded(kick, kickGain);
   kick.start(now);
   kick.stop(now + kickDuration + 0.02);
 
@@ -130,6 +138,7 @@ export function playHitSound(context, output = masterGain, soundProfile = {}) {
   );
   noiseGain.gain.exponentialRampToValueAtTime(0.001, now + crackDuration);
   noise.connect(noiseFilter).connect(noiseGain).connect(output);
+  disconnectWhenEnded(noise, noiseFilter, noiseGain);
   noise.start(now);
   noise.stop(now + crackDuration + 0.02);
 
@@ -151,6 +160,7 @@ export function playHitSound(context, output = masterGain, soundProfile = {}) {
     fragmentGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
     fragment.connect(fragmentGain).connect(output);
+    disconnectWhenEnded(fragment, fragmentGain);
     fragment.start(now + index * 0.004);
     fragment.stop(now + duration + 0.02);
   });
