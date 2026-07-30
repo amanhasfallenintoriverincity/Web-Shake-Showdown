@@ -23,6 +23,12 @@ import {
   incrementScore,
 } from '../gameLogic';
 import { fitPanelToViewport } from '../viewportFit';
+import {
+  createHostOrientationPeer,
+  shouldAcceptRelayedOrientation,
+  shouldResetHostRoomState,
+} from '../webrtcOrientationPeer';
+import { applyTrackedOrientation, initializeTrackedOrientation } from '../orientationTransport';
 
 // Use relative path to leverage Vite's proxy
 const BACKEND_URL = '/';
@@ -63,6 +69,30 @@ const HostView = () => {
   const viewportFitPanelRef = useRef(null);
   // Use a ref for high-frequency orientation data to avoid re-rendering HostView 60 times a second
   const playerOrientations = useRef({});
+  const playerOrientationSequences = useRef({});
+  const orientationPeersRef = useRef(new Map());
+
+  const closeAllOrientationPeers = useCallback(() => {
+    for (const peerSession of orientationPeersRef.current.values()) {
+      peerSession.close();
+    }
+    orientationPeersRef.current.clear();
+  }, []);
+
+  const applyPlayerOrientation = useCallback((playerId, data, sequence) => {
+    if (!applyTrackedOrientation(
+      playerOrientations.current,
+      playerOrientationSequences.current,
+      playerId,
+      data,
+      sequence
+    )) return;
+
+    // Throttled UI update to verify reception on screen (about 3 times a second).
+    if (Math.random() < 0.1) {
+      setDebugData(prev => ({ ...prev, [playerId]: data }));
+    }
+  }, []);
 
   useLayoutEffect(() => {
     const panel = viewportFitPanelRef.current;
@@ -162,6 +192,19 @@ const HostView = () => {
     });
 
     socket.on('room_created', (id) => {
+      if (shouldResetHostRoomState(roomIdRef.current)) {
+        closeAllOrientationPeers();
+        stopMusic();
+        scoresRef.current = {};
+        playerOrientations.current = {};
+        playerOrientationSequences.current = {};
+        setPlayers({});
+        setScores({});
+        setPlayerCalibrationState({});
+        setDebugData({});
+        setFinalResults([]);
+        setGameState('waiting');
+      }
       replacingRoomRef.current = false;
       roomIdRef.current = id;
       setRoomId(id);
@@ -177,11 +220,41 @@ const HostView = () => {
         scoresRef.current = next;
         return next;
       });
-      // Initialize orientation in ref
-      playerOrientations.current[playerId] = { alpha: 0, beta: 0, gamma: 0 };
+      // Keep the last sequence if the same socket replaces only its WebRTC peer.
+      initializeTrackedOrientation(
+        playerOrientations.current,
+        playerOrientationSequences.current,
+        playerId,
+        { alpha: 0, beta: 0, gamma: 0 }
+      );
       setPlayerCalibrationState(prev => (
         setPlayerCalibration(prev, playerId, CALIBRATION_ALIGNING)
       ));
+
+      const previousPeer = orientationPeersRef.current.get(playerId);
+      previousPeer?.close();
+      orientationPeersRef.current.delete(playerId);
+
+      if (globalThis.RTCPeerConnection) {
+        try {
+          const peerSession = createHostOrientationPeer({
+            socket,
+            roomId: roomIdRef.current,
+            playerId,
+            onOrientation: (data, sequence) => applyPlayerOrientation(playerId, data, sequence),
+          });
+          orientationPeersRef.current.set(playerId, peerSession);
+          void peerSession.start().catch(error => {
+            console.warn('WebRTC orientation offer failed; using Socket.IO fallback.', error);
+            if (orientationPeersRef.current.get(playerId) === peerSession) {
+              peerSession.close();
+              orientationPeersRef.current.delete(playerId);
+            }
+          });
+        } catch (error) {
+          console.warn('WebRTC orientation setup failed; using Socket.IO fallback.', error);
+        }
+      }
     });
 
     socket.on('player_left', ({ playerId }) => {
@@ -197,6 +270,9 @@ const HostView = () => {
         return next;
       });
       delete playerOrientations.current[playerId];
+      delete playerOrientationSequences.current[playerId];
+      orientationPeersRef.current.get(playerId)?.close();
+      orientationPeersRef.current.delete(playerId);
       setPlayerCalibrationState(prev => removePlayerCalibration(prev, playerId));
     });
 
@@ -212,23 +288,38 @@ const HostView = () => {
       ));
     });
 
-    socket.on('player_orientation', ({ playerId, data }) => {
-      // Mutate ref directly for high-speed updates without React re-renders
-      if (playerOrientations.current[playerId]) {
-        playerOrientations.current[playerId] = data;
-      }
+    socket.on('webrtc_answer', ({ playerId, answer }) => {
+      const peerSession = orientationPeersRef.current.get(playerId);
+      if (!peerSession) return;
+      void peerSession.acceptAnswer(answer).catch(error => {
+        console.warn('Could not apply controller WebRTC answer.', error);
+        if (orientationPeersRef.current.get(playerId) === peerSession) {
+          peerSession.close();
+          orientationPeersRef.current.delete(playerId);
+        }
+      });
+    });
 
-      // Throttled UI update to verify reception on screen (about 3 times a second)
-      if (Math.random() < 0.1) {
-        setDebugData(prev => ({ ...prev, [playerId]: data }));
-      }
+    socket.on('webrtc_controller_candidate', ({ playerId, candidate }) => {
+      const peerSession = orientationPeersRef.current.get(playerId);
+      if (!peerSession) return;
+      void peerSession.addCandidate(candidate).catch(error => {
+        console.warn('Could not add controller WebRTC candidate.', error);
+      });
+    });
+
+    socket.on('player_orientation', ({ playerId, data, sequence }) => {
+      const peerSession = orientationPeersRef.current.get(playerId);
+      if (!shouldAcceptRelayedOrientation(peerSession)) return;
+      applyPlayerOrientation(playerId, data, sequence);
     });
 
     return () => {
       stopMusic();
+      closeAllOrientationPeers();
       socket.disconnect();
     };
-  }, []);
+  }, [applyPlayerOrientation, closeAllOrientationPeers]);
 
   useEffect(() => {
     if (gameState !== 'finished') return undefined;
@@ -245,9 +336,11 @@ const HostView = () => {
 
     const replaceRoom = window.setTimeout(() => {
       const finishedRoomId = roomIdRef.current;
+      closeAllOrientationPeers();
       roomIdRef.current = null;
       scoresRef.current = {};
       playerOrientations.current = {};
+      playerOrientationSequences.current = {};
       setRoomId(null);
       setPlayers({});
       setScores({});
@@ -262,7 +355,7 @@ const HostView = () => {
       window.clearInterval(countdown);
       window.clearTimeout(replaceRoom);
     };
-  }, [gameState]);
+  }, [closeAllOrientationPeers, gameState]);
 
   const calibrationSummary = getCalibrationSummary(players, playerCalibration);
   const pendingPlayer = Object.values(players).find(

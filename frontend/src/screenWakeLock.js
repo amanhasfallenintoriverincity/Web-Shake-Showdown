@@ -5,6 +5,7 @@ export function createScreenWakeLock({
   let sentinel = null;
   let active = false;
   let listening = false;
+  let pendingAcquire = null;
 
   const acquire = async () => {
     if (
@@ -15,16 +16,40 @@ export function createScreenWakeLock({
     ) {
       return sentinel;
     }
+    if (pendingAcquire) return pendingAcquire;
+
+    const request = (async () => {
+      try {
+        const acquired = await navigatorObject.wakeLock.request('screen');
+        if (!acquired) return null;
+        if (!active || documentObject?.visibilityState !== 'visible') {
+          try {
+            await acquired.release?.();
+          } catch {
+            // The lock is already inactive; there is nothing else to release.
+          }
+          return null;
+        }
+
+        sentinel = acquired;
+        try {
+          acquired.addEventListener?.('release', () => {
+            if (sentinel === acquired) sentinel = null;
+          });
+        } catch {
+          // Some partial Wake Lock implementations omit event support.
+        }
+        return acquired;
+      } catch {
+        return null;
+      }
+    })();
+    pendingAcquire = request;
 
     try {
-      const acquired = await navigatorObject.wakeLock.request('screen');
-      sentinel = acquired;
-      acquired.addEventListener?.('release', () => {
-        if (sentinel === acquired) sentinel = null;
-      });
-      return acquired;
-    } catch {
-      return null;
+      return await request;
+    } finally {
+      if (pendingAcquire === request) pendingAcquire = null;
     }
   };
 
@@ -50,7 +75,11 @@ export function createScreenWakeLock({
       }
       const current = sentinel;
       sentinel = null;
-      await current?.release?.();
+      try {
+        await current?.release?.();
+      } catch {
+        // Treat a browser-side release race as already released.
+      }
     },
   };
 }
