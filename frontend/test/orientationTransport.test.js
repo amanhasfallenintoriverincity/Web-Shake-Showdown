@@ -407,3 +407,49 @@ test('device orientation permission flow lets only the newest attempt connect', 
   assert.equal(await second, true);
   assert.deepEqual(grants, ['second']);
 });
+
+test('orientation reception diagnostics report the accepted direct packet age', async () => {
+  const {
+    getOrientationReceptionDiagnostic,
+    recordOrientationReception,
+  } = await import('../src/orientationTransport.js');
+  const receptions = {};
+
+  assert.equal(recordOrientationReception(receptions, 'player-1', 'DIRECT', 1000), true);
+  assert.deepEqual(getOrientationReceptionDiagnostic(receptions, 'player-1', 1125), {
+    transport: 'DIRECT',
+    lastReceivedAt: 1000,
+    ageMs: 125,
+    ageLabel: '125ms 전',
+    isStale: false,
+  });
+});
+
+test('orientation reception diagnostics mark an old fallback packet as stale', async () => {
+  const {
+    getOrientationReceptionDiagnostic,
+    recordOrientationReception,
+  } = await import('../src/orientationTransport.js');
+  const receptions = {};
+
+  assert.equal(recordOrientationReception(receptions, 'player-1', 'FALLBACK', 1000), true);
+  assert.deepEqual(getOrientationReceptionDiagnostic(receptions, 'player-1', 2500), {
+    transport: 'FALLBACK',
+    lastReceivedAt: 1000,
+    ageMs: 1500,
+    ageLabel: '1.5초 전',
+    isStale: true,
+  });
+});
+
+test('orientation reception diagnostics show fallback waiting before the first packet', async () => {
+  const { getOrientationReceptionDiagnostic } = await import('../src/orientationTransport.js');
+
+  assert.deepEqual(getOrientationReceptionDiagnostic({}, 'player-1', 2500), {
+    transport: 'FALLBACK',
+    lastReceivedAt: null,
+    ageMs: null,
+    ageLabel: '수신 대기',
+    isStale: true,
+  });
+});

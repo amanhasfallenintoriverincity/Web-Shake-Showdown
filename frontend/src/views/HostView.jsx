@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 import GameScene from '../components/GameScene';
 import AlignmentGuide from '../components/AlignmentGuide';
+import OrientationTransportStatus from '../components/OrientationTransportStatus';
 import { pauseMusic, playHit, resumeMusic, startMusic, stopMusic } from '../audio';
 import {
   isAutoStartEligible,
@@ -28,7 +29,12 @@ import {
   shouldAcceptRelayedOrientation,
   shouldResetHostRoomState,
 } from '../webrtcOrientationPeer';
-import { applyTrackedOrientation, initializeTrackedOrientation } from '../orientationTransport';
+import {
+  applyTrackedOrientationReception,
+  initializeTrackedOrientation,
+  ORIENTATION_TRANSPORT_DIRECT,
+  ORIENTATION_TRANSPORT_FALLBACK,
+} from '../orientationTransport';
 
 // Use relative path to leverage Vite's proxy
 const BACKEND_URL = '/';
@@ -70,6 +76,7 @@ const HostView = () => {
   // Use a ref for high-frequency orientation data to avoid re-rendering HostView 60 times a second
   const playerOrientations = useRef({});
   const playerOrientationSequences = useRef({});
+  const playerOrientationReceptions = useRef({});
   const orientationPeersRef = useRef(new Map());
 
   const closeAllOrientationPeers = useCallback(() => {
@@ -79,14 +86,17 @@ const HostView = () => {
     orientationPeersRef.current.clear();
   }, []);
 
-  const applyPlayerOrientation = useCallback((playerId, data, sequence) => {
-    if (!applyTrackedOrientation(
-      playerOrientations.current,
-      playerOrientationSequences.current,
+  const applyPlayerOrientation = useCallback((playerId, data, sequence, transport) => {
+    if (!applyTrackedOrientationReception({
+      orientations: playerOrientations.current,
+      sequences: playerOrientationSequences.current,
+      receptions: playerOrientationReceptions.current,
       playerId,
       data,
-      sequence
-    )) return;
+      sequence,
+      transport,
+      receivedAt: Date.now(),
+    })) return;
 
     // Throttled UI update to verify reception on screen (about 3 times a second).
     if (Math.random() < 0.1) {
@@ -198,6 +208,7 @@ const HostView = () => {
         scoresRef.current = {};
         playerOrientations.current = {};
         playerOrientationSequences.current = {};
+        playerOrientationReceptions.current = {};
         setPlayers({});
         setScores({});
         setPlayerCalibrationState({});
@@ -241,7 +252,12 @@ const HostView = () => {
             socket,
             roomId: roomIdRef.current,
             playerId,
-            onOrientation: (data, sequence) => applyPlayerOrientation(playerId, data, sequence),
+            onOrientation: (data, sequence) => applyPlayerOrientation(
+              playerId,
+              data,
+              sequence,
+              ORIENTATION_TRANSPORT_DIRECT
+            ),
           });
           orientationPeersRef.current.set(playerId, peerSession);
           void peerSession.start().catch(error => {
@@ -271,6 +287,7 @@ const HostView = () => {
       });
       delete playerOrientations.current[playerId];
       delete playerOrientationSequences.current[playerId];
+      delete playerOrientationReceptions.current[playerId];
       orientationPeersRef.current.get(playerId)?.close();
       orientationPeersRef.current.delete(playerId);
       setPlayerCalibrationState(prev => removePlayerCalibration(prev, playerId));
@@ -311,7 +328,12 @@ const HostView = () => {
     socket.on('player_orientation', ({ playerId, data, sequence }) => {
       const peerSession = orientationPeersRef.current.get(playerId);
       if (!shouldAcceptRelayedOrientation(peerSession)) return;
-      applyPlayerOrientation(playerId, data, sequence);
+      applyPlayerOrientation(
+        playerId,
+        data,
+        sequence,
+        ORIENTATION_TRANSPORT_FALLBACK
+      );
     });
 
     return () => {
@@ -341,6 +363,7 @@ const HostView = () => {
       scoresRef.current = {};
       playerOrientations.current = {};
       playerOrientationSequences.current = {};
+      playerOrientationReceptions.current = {};
       setRoomId(null);
       setPlayers({});
       setScores({});
@@ -553,6 +576,10 @@ const HostView = () => {
                       <span style={{ color: p.color, fontSize: '0.78rem', fontWeight: 800 }}>
                         {index + 1}번 · {playerCalibration[p.id] === CALIBRATION_READY ? '위치 맞춤 완료' : '위치 맞추는 중'}
                       </span>
+                      <OrientationTransportStatus
+                        playerId={p.id}
+                        receptions={playerOrientationReceptions.current}
+                      />
                     </div>
                   ))}
                 </div>
@@ -635,6 +662,10 @@ const HostView = () => {
                   <div className="score-display" style={{ color: p.color }}>
                     {Object.keys(players).indexOf(p.id) + 1}번: {scores[p.id] ?? 0}점
                   </div>
+                  <OrientationTransportStatus
+                    playerId={p.id}
+                    receptions={playerOrientationReceptions.current}
+                  />
                   {debugData[p.id] && (
                     <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: '12px', background: 'rgba(0,0,0,0.5)', padding: '5px', borderRadius: '5px' }}>
                       α: {debugData[p.id].alpha?.toFixed(0)}°<br/>

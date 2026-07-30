@@ -1,6 +1,9 @@
 const ORIENTATION_INTERVAL_MS = 1000 / 60;
 const ORIENTATION_PACKET_BYTES = 16;
 const MAX_ORIENTATION_SEQUENCE = 0xffffffff;
+const ORIENTATION_RECEPTION_STALE_MS = 1000;
+export const ORIENTATION_TRANSPORT_DIRECT = 'DIRECT';
+export const ORIENTATION_TRANSPORT_FALLBACK = 'FALLBACK';
 
 export function isValidOrientation(data) {
   return data !== null
@@ -23,6 +26,43 @@ function isNewerOrientationSequence(sequence, lastSequence) {
   return distance > 0 && distance < 0x80000000;
 }
 
+function isValidOrientationReception(playerId, transport, receivedAt) {
+  return typeof playerId === 'string'
+    && Boolean(playerId)
+    && Number.isFinite(receivedAt)
+    && (transport === ORIENTATION_TRANSPORT_DIRECT
+      || transport === ORIENTATION_TRANSPORT_FALLBACK);
+}
+
+export function recordOrientationReception(receptions, playerId, transport, receivedAt) {
+  if (receptions === null || typeof receptions !== 'object') return false;
+  if (!isValidOrientationReception(playerId, transport, receivedAt)) return false;
+  receptions[playerId] = { transport, lastReceivedAt: receivedAt };
+  return true;
+}
+
+export function getOrientationReceptionDiagnostic(receptions, playerId, now) {
+  const reception = receptions[playerId];
+  if (!reception) {
+    return {
+      transport: ORIENTATION_TRANSPORT_FALLBACK,
+      lastReceivedAt: null,
+      ageMs: null,
+      ageLabel: '수신 대기',
+      isStale: true,
+    };
+  }
+  const ageMs = Math.max(0, Math.round(now - reception.lastReceivedAt));
+  return {
+    ...reception,
+    ageMs,
+    ageLabel: ageMs < ORIENTATION_RECEPTION_STALE_MS
+      ? `${ageMs}ms 전`
+      : `${(ageMs / 1000).toFixed(1)}초 전`,
+    isStale: ageMs >= ORIENTATION_RECEPTION_STALE_MS,
+  };
+}
+
 export function applyTrackedOrientation(orientations, sequences, playerId, data, sequence) {
   if (!Object.prototype.hasOwnProperty.call(orientations, playerId)) return false;
   if (!isValidOrientation(data)) return false;
@@ -30,6 +70,23 @@ export function applyTrackedOrientation(orientations, sequences, playerId, data,
 
   orientations[playerId] = data;
   sequences[playerId] = sequence;
+  return true;
+}
+
+export function applyTrackedOrientationReception({
+  orientations,
+  sequences,
+  receptions,
+  playerId,
+  data,
+  sequence,
+  transport,
+  receivedAt,
+}) {
+  if (receptions === null || typeof receptions !== 'object') return false;
+  if (!isValidOrientationReception(playerId, transport, receivedAt)) return false;
+  if (!applyTrackedOrientation(orientations, sequences, playerId, data, sequence)) return false;
+  receptions[playerId] = { transport, lastReceivedAt: receivedAt };
   return true;
 }
 
