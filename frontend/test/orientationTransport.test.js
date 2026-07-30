@@ -2,25 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createOrientationPublisher } from '../src/orientationTransport.js';
 
-test('orientation publisher sends fresh input at 60fps without queueing stale frames', () => {
+test('orientation publisher forwards all 60 fresh samples from a fast one-second swing', () => {
   const events = [];
-  let now = 100;
   const socket = {
     connected: true,
     volatile: {
       emit(event, payload) { events.push({ event, payload }); },
     },
   };
-  const publish = createOrientationPublisher({ now: () => now });
+  const publish = createOrientationPublisher();
 
-  assert.equal(publish(socket, 'ABCD', { alpha: 1 }), true);
-  now += 5;
-  assert.equal(publish(socket, 'ABCD', { alpha: 2 }), false);
-  now += 12;
-  assert.equal(publish(socket, 'ABCD', { alpha: 3 }), true);
+  for (let alpha = 0; alpha < 60; alpha += 1) {
+    publish(socket, 'ABCD', { alpha });
+  }
 
-  assert.deepEqual(events, [
-    { event: 'orientation', payload: { roomId: 'ABCD', data: { alpha: 1 } } },
-    { event: 'orientation', payload: { roomId: 'ABCD', data: { alpha: 3 } } },
-  ]);
+  assert.equal(events.length, 60);
+  assert.deepEqual(events.at(-1), {
+    event: 'orientation',
+    payload: { roomId: 'ABCD', data: { alpha: 59 } },
+  });
 });

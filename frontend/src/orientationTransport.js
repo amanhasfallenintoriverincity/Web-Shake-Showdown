@@ -1,16 +1,10 @@
-const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
-
-export function createOrientationPublisher({
-  now = () => performance.now(),
-  minIntervalMs = SIXTY_FPS_INTERVAL_MS,
-} = {}) {
-  let lastSentAt = -Infinity;
-
+export function createOrientationPublisher() {
   return (socket, roomId, data) => {
-    const sentAt = now();
-    if (!socket?.connected || sentAt - lastSentAt < minIntervalMs) return false;
+    if (!socket?.connected) return false;
 
-    lastSentAt = sentAt;
+    // DeviceOrientation already supplies the browser's sensor cadence. Forward each
+    // fresh sample; volatile transport discards it instead of queueing if WebSocket
+    // cannot write immediately.
     socket.volatile.emit('orientation', { roomId, data });
     return true;
   };
